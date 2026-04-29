@@ -1,8 +1,8 @@
 #!/bin/bash
-# Integration test script for Day 2
+# Integration test script for Day 3
 
 echo "=========================================="
-echo "Day 2 Integration Test"
+echo "Day 3 Integration Test"
 echo "=========================================="
 echo ""
 
@@ -38,6 +38,11 @@ echo ""
 echo "4. Checking received logs..."
 LOG_COUNT=$(curl -s http://localhost:8080/logs/count | grep -o '"count":[0-9]*' | grep -o '[0-9]*')
 echo "   Logs received: $LOG_COUNT"
+if [ "$LOG_COUNT" = "10" ]; then
+    echo "   ✓ Batch delivery stored all 10 logs"
+else
+    echo "   ✗ Expected 10 logs but found $LOG_COUNT"
+fi
 echo ""
 
 # Retrieve all logs
