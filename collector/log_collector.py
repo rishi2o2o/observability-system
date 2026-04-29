@@ -2,10 +2,9 @@
 """
 Log Collector with HTTP Transport
 Reads logs from a file, converts them to structured JSON format,
-and sends them to a log server via HTTP POST
+buffers them in groups of 10, and sends each batch to a log server via HTTP POST
 """
 
-import json
 import re
 import sys
 import requests
@@ -48,60 +47,87 @@ def parse_log_line(line):
         }
 
 
-def send_log(log_data, server_url):
+def send_batch(log_batch, server_url):
     """
-    Send a structured log to the log server via HTTP POST.
-    
+    Send a batch of structured logs to the log server via HTTP POST.
+
     Args:
-        log_data: Dictionary containing structured log data
+        log_batch: List of dictionaries containing structured log data
         server_url: URL of the log server endpoint
-    
+
     Returns:
         True if successful, False otherwise
     """
     try:
         response = requests.post(
             server_url,
-            json=log_data,
+            json={"logs": log_batch},
             headers={"Content-Type": "application/json"},
             timeout=5
         )
         response.raise_for_status()
         return True
     except requests.exceptions.RequestException as e:
-        print(f"Failed to send log: {e}", file=sys.stderr)
+        print(f"Failed to send batch: {e}", file=sys.stderr)
         return False
 
 
 def collect_logs(file_path, server_url="http://localhost:8080/log"):
     """
     Read logs from a file, convert them to structured JSON format,
-    and send them to a log server via HTTP POST.
-    
+    buffer them in groups of 10, and send each batch to a log server via HTTP POST.
+
     Args:
         file_path: Path to the log file
         server_url: URL of the log server endpoint (default: http://localhost:8080/log)
     """
+    batch_size = 10
+
     try:
         with open(file_path, 'r') as file:
             print(f"Reading logs from: {file_path}")
-            print(f"Sending logs to: {server_url}")
+            print(f"Sending log batches to: {server_url}")
+            print(f"Batch size: {batch_size}")
             print("-" * 60)
-            
+
             success_count = 0
             failure_count = 0
-            
+            batch = []
+            batch_start_line = None
+            last_processed_line = None
+
             for line_number, line in enumerate(file, 1):
                 structured_log = parse_log_line(line)
-                
-                if structured_log:
-                    if send_log(structured_log, server_url):
-                        success_count += 1
-                        print(f"✓ Sent log {line_number}: [{structured_log['level']}] {structured_log['message'][:50]}...")
+
+                if not structured_log:
+                    continue
+
+                if batch_start_line is None:
+                    batch_start_line = line_number
+
+                last_processed_line = line_number
+                batch.append(structured_log)
+
+                if len(batch) == batch_size:
+                    if send_batch(batch, server_url):
+                        success_count += len(batch)
+                        print(f"✓ Sent batch lines {batch_start_line}-{line_number} ({len(batch)} logs)")
                     else:
-                        failure_count += 1
-                        print(f"✗ Failed to send log {line_number}")
-            
+                        failure_count += len(batch)
+                        print(f"✗ Failed to send batch lines {batch_start_line}-{line_number} ({len(batch)} logs)")
+
+                    batch = []
+                    batch_start_line = None
+
+            if batch:
+                final_line = last_processed_line
+                if send_batch(batch, server_url):
+                    success_count += len(batch)
+                    print(f"✓ Sent final batch lines {batch_start_line}-{final_line} ({len(batch)} logs)")
+                else:
+                    failure_count += len(batch)
+                    print(f"✗ Failed to send final batch lines {batch_start_line}-{final_line} ({len(batch)} logs)")
+
             print("-" * 60)
             print(f"Summary: {success_count} logs sent successfully, {failure_count} failed")
                     

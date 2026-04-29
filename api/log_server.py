@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Simple Log Server
-Receives structured logs via HTTP POST and displays them
+Receives structured log batches via HTTP POST and displays them
 """
 
 from flask import Flask, request, jsonify
@@ -17,45 +17,59 @@ received_logs = []
 @app.route('/log', methods=['POST'])
 def receive_log():
     """
-    Endpoint to receive log entries via HTTP POST.
-    
+    Endpoint to receive log batches via HTTP POST.
+
     Expected JSON format:
     {
-        "timestamp": "2026-04-29T05:35:40.039540Z",
-        "level": "INFO",
-        "message": "user login success"
+        "logs": [
+            {
+                "timestamp": "2026-04-29T05:35:40.039540Z",
+                "level": "INFO",
+                "message": "user login success"
+            }
+        ]
     }
     """
     try:
-        log_data = request.get_json()
-        
-        if not log_data:
+        payload = request.get_json()
+
+        if not payload:
             return jsonify({"error": "No JSON data provided"}), 400
-        
-        # Validate required fields
+
+        log_batch = payload.get("logs")
+
+        if not isinstance(log_batch, list) or not log_batch:
+            return jsonify({"error": "Expected a non-empty 'logs' array"}), 400
+
         required_fields = ["timestamp", "level", "message"]
-        missing_fields = [field for field in required_fields if field not in log_data]
-        
-        if missing_fields:
-            return jsonify({
-                "error": f"Missing required fields: {', '.join(missing_fields)}"
-            }), 400
-        
-        # Store the log
-        received_logs.append(log_data)
-        
-        # Print the received log to console
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Received log:")
-        print(json.dumps(log_data, indent=2))
+
+        for index, log_data in enumerate(log_batch):
+            if not isinstance(log_data, dict):
+                return jsonify({
+                    "error": f"Log at index {index} must be an object"
+                }), 400
+
+            missing_fields = [field for field in required_fields if field not in log_data]
+
+            if missing_fields:
+                return jsonify({
+                    "error": f"Log at index {index} is missing required fields: {', '.join(missing_fields)}"
+                }), 400
+
+        received_logs.extend(log_batch)
+
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Received batch of {len(log_batch)} logs:")
+        print(json.dumps(log_batch, indent=2))
         print("-" * 60)
-        
+
         return jsonify({
             "status": "success",
-            "message": "Log received successfully"
+            "message": f"Batch received successfully",
+            "logs_received": len(log_batch)
         }), 200
-        
+
     except Exception as e:
-        print(f"Error processing log: {e}")
+        print(f"Error processing log batch: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -112,7 +126,7 @@ def main():
     print("Log Server Starting")
     print("=" * 60)
     print("Endpoints:")
-    print("  POST   /log          - Receive log entries")
+    print("  POST   /log          - Receive log batches")
     print("  GET    /logs         - Retrieve all logs")
     print("  GET    /logs/count   - Get log count")
     print("  POST   /logs/clear   - Clear all logs")
