@@ -1,57 +1,22 @@
 #!/usr/bin/env python3
 """
-Log Collector with Queue Transport
-Reads logs from a file, converts them to structured JSON format,
-and sends them to an in-memory queue for processing
+Unified System Runner
+Runs collector and processor together to share the in-memory queue
 """
 
-import re
 import sys
-from datetime import datetime, timezone
+import time
+import signal
+import threading
+from collector.log_collector import parse_log_line
+from processor.log_processor import LogProcessor
 from log_queue.log_queue import get_queue
 
 
-def parse_log_line(line):
+def run_collector(file_path):
     """
-    Parse a log line and extract structured information.
+    Read logs from a file and enqueue them.
     
-    Expected format: [LEVEL] message
-    Example: [INFO] user login success
-    
-    Returns a dictionary with structured log data.
-    """
-    line = line.strip()
-    
-    if not line:
-        return None
-    
-    # Pattern to match [LEVEL] message format
-    pattern = r'^\[(\w+)\]\s+(.+)$'
-    match = re.match(pattern, line)
-    
-    if match:
-        level = match.group(1)
-        message = match.group(2)
-        
-        return {
-            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "level": level,
-            "message": message
-        }
-    else:
-        # If the line doesn't match the expected format, treat it as a raw message
-        return {
-            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "level": "UNKNOWN",
-            "message": line
-        }
-
-
-def collect_logs(file_path):
-    """
-    Read logs from a file, convert them to structured JSON format,
-    and send them to the queue.
-
     Args:
         file_path: Path to the log file
     """
@@ -97,15 +62,43 @@ def collect_logs(file_path):
 
 
 def main():
-    """Main entry point for the log collector."""
-    if len(sys.argv) != 2:
-        print("Usage: python log_collector.py <log_file_path>")
-        print("Example: python log_collector.py sample_logs.txt")
+    """Main entry point."""
+    if len(sys.argv) < 2 or len(sys.argv) > 3:
+        print("Usage: python run_system.py <log_file_path> [server_url]")
+        print("Example: python run_system.py collector/sample_logs.txt")
+        print("Example: python run_system.py collector/sample_logs.txt http://localhost:8080/log")
         sys.exit(1)
     
     log_file = sys.argv[1]
+    server_url = sys.argv[2] if len(sys.argv) == 3 else "http://localhost:8080/log"
     
-    collect_logs(log_file)
+    # Create and start the processor in a background thread
+    processor = LogProcessor(server_url, batch_size=10)
+    processor.start()
+    
+    # Set up signal handler for graceful shutdown
+    def signal_handler(sig, frame):
+        print("\n\nShutting down...")
+        processor.stop()
+        processor.print_stats()
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Give processor a moment to start
+    time.sleep(0.5)
+    
+    # Run the collector
+    run_collector(log_file)
+    
+    # Wait a bit for processor to finish processing
+    print("\nWaiting for processor to finish...")
+    time.sleep(3)
+    
+    # Stop the processor
+    processor.stop()
+    processor.print_stats()
 
 
 if __name__ == "__main__":
