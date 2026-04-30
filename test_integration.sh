@@ -1,14 +1,14 @@
 #!/bin/bash
-# Integration test script for Day 3
+# Integration test script for Day 4
 
 echo "=========================================="
-echo "Day 3 Integration Test"
+echo "Day 4 Integration Test"
 echo "=========================================="
 echo ""
 
 # Start the log server in the background
 echo "1. Starting log server..."
-python3 api/log_server.py &
+python3 -m api.log_server &
 SERVER_PID=$!
 
 # Wait for server to start
@@ -29,9 +29,9 @@ HEALTH_RESPONSE=$(curl -s http://localhost:8080/health)
 echo "   Response: $HEALTH_RESPONSE"
 echo ""
 
-# Run the log collector
-echo "3. Running log collector..."
-python3 collector/log_collector.py collector/sample_logs.txt
+# Run the unified system (collector + processor in one process)
+echo "3. Running collector and processor..."
+python3 run_system.py collector/sample_logs.txt
 echo ""
 
 # Get log count
@@ -39,7 +39,7 @@ echo "4. Checking received logs..."
 LOG_COUNT=$(curl -s http://localhost:8080/logs/count | grep -o '"count":[0-9]*' | grep -o '[0-9]*')
 echo "   Logs received: $LOG_COUNT"
 if [ "$LOG_COUNT" = "10" ]; then
-    echo "   ✓ Batch delivery stored all 10 logs"
+    echo "   ✓ All 10 logs processed successfully"
 else
     echo "   ✗ Expected 10 logs but found $LOG_COUNT"
 fi
