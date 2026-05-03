@@ -1,35 +1,40 @@
 #!/usr/bin/env python3
 """
-In-Memory Log Queue
-A simple thread-safe queue for buffering logs between collector and processor
+Redis-Based Log Queue
+A shared queue for buffering logs between collector and processor using Redis
 """
 
-import threading
-from collections import deque
+import json
+import redis
 from typing import Optional, List, Dict, Any
 
 
 class LogQueue:
     """
-    Thread-safe in-memory queue for log messages.
+    Redis-based queue for log messages.
     
     This queue acts as a buffer between the collector and processor,
-    allowing them to operate independently and handle backpressure.
+    allowing them to operate independently across different processes.
     """
     
-    def __init__(self, max_size: Optional[int] = None):
+    def __init__(self, redis_host: str, redis_port: int, 
+                 redis_db: int, queue_key: str):
         """
-        Initialize the log queue.
+        Initialize the Redis log queue.
         
         Args:
-            max_size: Maximum number of items in queue (None for unlimited)
+            redis_host: Redis server hostname
+            redis_port: Redis server port
+            redis_db: Redis database number
+            queue_key: Redis key name for the queue
         """
-        self._queue = deque(maxlen=max_size)
-        self._lock = threading.Lock()
-        self._not_empty = threading.Condition(self._lock)
-        self._max_size = max_size
-        self._total_enqueued = 0
-        self._total_dequeued = 0
+        self.redis_client = redis.Redis(
+            host=redis_host,
+            port=redis_port,
+            db=redis_db,
+            decode_responses=True
+        )
+        self.queue_key = queue_key
     
     def enqueue(self, log_entry: Dict[str, Any]) -> bool:
         """
@@ -39,16 +44,13 @@ class LogQueue:
             log_entry: Dictionary containing structured log data
             
         Returns:
-            True if successfully enqueued, False if queue is full
+            True if successfully enqueued
         """
-        with self._lock:
-            if self._max_size and len(self._queue) >= self._max_size:
-                return False
-            
-            self._queue.append(log_entry)
-            self._total_enqueued += 1
-            self._not_empty.notify()
+        try:
+            self.redis_client.lpush(self.queue_key, json.dumps(log_entry))
             return True
+        except Exception:
+            return False
     
     def enqueue_batch(self, log_entries: List[Dict[str, Any]]) -> int:
         """
@@ -60,38 +62,45 @@ class LogQueue:
         Returns:
             Number of entries successfully enqueued
         """
-        count = 0
-        with self._lock:
+        try:
+            pipeline = self.redis_client.pipeline()
             for entry in log_entries:
-                if self._max_size and len(self._queue) >= self._max_size:
-                    break
-                self._queue.append(entry)
-                count += 1
-            
-            self._total_enqueued += count
-            if count > 0:
-                self._not_empty.notify()
-        
-        return count
+                pipeline.lpush(self.queue_key, json.dumps(entry))
+            pipeline.execute()
+            return len(log_entries)
+        except Exception:
+            return 0
     
     def dequeue(self, timeout: Optional[float] = None) -> Optional[Dict[str, Any]]:
         """
         Remove and return a log entry from the queue.
         
         Args:
-            timeout: Maximum time to wait for an item (None = wait forever)
+            timeout: Maximum time to wait for an item (None = wait forever, 0 = non-blocking)
             
         Returns:
             Log entry dictionary, or None if timeout occurred
         """
-        with self._not_empty:
-            while len(self._queue) == 0:
-                if not self._not_empty.wait(timeout):
-                    return None
+        try:
+            if timeout is None:
+                # Block forever
+                result = self.redis_client.brpop(self.queue_key)
+            elif timeout == 0:
+                # Non-blocking
+                result = self.redis_client.rpop(self.queue_key)
+                if result:
+                    result = (self.queue_key, result)
+            else:
+                # Block with timeout
+                result = self.redis_client.brpop(self.queue_key, timeout=int(timeout))
             
-            entry = self._queue.popleft()
-            self._total_dequeued += 1
-            return entry
+            if result:
+                return json.loads(result[1])
+
+            return None
+
+        except Exception:
+            return None
     
     def dequeue_batch(self, batch_size: int, timeout: Optional[float] = None) -> List[Dict[str, Any]]:
         """
@@ -106,84 +115,55 @@ class LogQueue:
         """
         batch = []
         
-        with self._not_empty:
-            # Wait for at least one item
-            while len(self._queue) == 0:
-                if not self._not_empty.wait(timeout):
-                    return batch
-            
-            # Collect up to batch_size items
-            while len(batch) < batch_size and len(self._queue) > 0:
-                batch.append(self._queue.popleft())
-            
-            self._total_dequeued += len(batch)
+        # Wait for at least one item
+        first_entry = self.dequeue(timeout=timeout)
+        if not first_entry:
+            return batch
+        
+        batch.append(first_entry)
+        
+        # Collect up to batch_size items (non-blocking for remaining items)
+        while len(batch) < batch_size:
+            entry = self.dequeue(timeout=0)
+            if not entry:
+                break
+            batch.append(entry)
         
         return batch
     
     def size(self) -> int:
         """Return the current number of items in the queue."""
-        with self._lock:
-            return len(self._queue)
+        try:
+            return self.redis_client.llen(self.queue_key)
+        except Exception:
+            return 0
     
     def is_empty(self) -> bool:
         """Check if the queue is empty."""
-        with self._lock:
-            return len(self._queue) == 0
-    
-    def is_full(self) -> bool:
-        """Check if the queue is full."""
-        with self._lock:
-            if self._max_size is None:
-                return False
-            return len(self._queue) >= self._max_size
+        return self.size() == 0
     
     def clear(self):
         """Remove all items from the queue."""
-        with self._lock:
-            self._queue.clear()
-    
-    def stats(self) -> Dict[str, Any]:
-        """
-        Get queue statistics.
-        
-        Returns:
-            Dictionary with queue metrics
-        """
-        with self._lock:
-            return {
-                "current_size": len(self._queue),
-                "max_size": self._max_size,
-                "total_enqueued": self._total_enqueued,
-                "total_dequeued": self._total_dequeued,
-                "is_full": self._max_size and len(self._queue) >= self._max_size,
-                "is_empty": len(self._queue) == 0
-            }
+        try:
+            self.redis_client.delete(self.queue_key)
+        except Exception:
+            pass
 
 
-# Global queue instance (singleton pattern for simplicity)
-_global_queue = None
+class LogQueueSingleton:
+    _log_queue_instance = None
 
-
-def get_queue(max_size: Optional[int] = None) -> LogQueue:
-    """
-    Get or create the global queue instance.
-    
-    Args:
-        max_size: Maximum queue size (only used on first call)
-        
-    Returns:
-        The global LogQueue instance
-    """
-    global _global_queue
-    if _global_queue is None:
-        _global_queue = LogQueue(max_size)
-    return _global_queue
-
-
-def reset_queue():
-    """Reset the global queue instance (useful for testing)."""
-    global _global_queue
-    _global_queue = None
-
+    @classmethod
+    def get_instance(cls):
+        if cls._log_queue_instance is None:
+            cls._log_queue_instance = LogQueue(
+                redis_host="localhost", 
+                redis_port=6379, 
+                redis_db=0,
+                queue_key="log_queue",
+            )
+        return cls._log_queue_instance
 
 # Made with Bob
+
+
