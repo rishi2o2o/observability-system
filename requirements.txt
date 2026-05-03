@@ -1,6 +1,5 @@
-# HTTP client for log collector
-requests==2.31.0
+requests
+Flask
+redis
 
-# Web framework for log server
-Flask==3.0.0
 

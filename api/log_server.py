@@ -1,18 +1,29 @@
 #!/usr/bin/env python3
 """
 Simple Log Server
-Receives structured log batches via HTTP POST and displays them
+Receives structured log batches via HTTP POST and displays them.
 """
 
 from flask import Flask, request, jsonify
 from datetime import datetime
 import json
+from config import Config
+
 
 app = Flask(__name__)
+
 
 # In-memory storage for received logs
 received_logs = []
 
+# In-memory storage for log aggregations
+log_aggregations = {
+    "INFO": 0,
+    "WARN": 0,
+    "ERROR": 0,
+    "DEBUG": 0,
+    "UNKWOWN": 0,
+}
 
 @app.route('/log', methods=['POST'])
 def receive_log():
@@ -55,6 +66,9 @@ def receive_log():
                 return jsonify({
                     "error": f"Log at index {index} is missing required fields: {', '.join(missing_fields)}"
                 }), 400
+            
+            log_level = log_data.get("level", "UNKOWN")
+            log_aggregations[log_level] += 1
 
         received_logs.extend(log_batch)
 
@@ -81,6 +95,15 @@ def get_logs():
     return jsonify({
         "total": len(received_logs),
         "logs": received_logs
+    }), 200
+
+
+@app.route('/logs/aggregations', methods=['GET'])
+def get_aggregations():
+    """Get log counts by level."""
+    return jsonify({
+        "total": len(received_logs),
+        "by_level": log_aggregations
     }), 200
 
 
@@ -122,9 +145,11 @@ def health_check():
 
 def main():
     """Main entry point for the log server."""
+
     print("=" * 60)
     print("Log Server Starting")
     print("=" * 60)
+
     print("Endpoints:")
     print("  POST   /log          - Receive log batches")
     print("  GET    /logs         - Retrieve all logs")
@@ -132,14 +157,17 @@ def main():
     print("  POST   /logs/clear   - Clear all logs")
     print("  GET    /health       - Health check")
     print("=" * 60)
-    print("Server running on http://localhost:8080")
+
+    print(f"Server running on http://{Config.LOG_SERVER_HOST}:{Config.LOG_SERVER_PORT}")
     print("Press Ctrl+C to stop")
     print("=" * 60)
     
-    app.run(host='0.0.0.0', port=8080, debug=False)
+    app.run(host=Config.LOG_SERVER_HOST, port=Config.LOG_SERVER_PORT, debug=False)
 
 
 if __name__ == "__main__":
     main()
 
 # Made with Bob
+
+

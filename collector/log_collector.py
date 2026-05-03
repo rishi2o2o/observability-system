@@ -8,7 +8,8 @@ and sends them to an in-memory queue for processing
 import re
 import sys
 from datetime import datetime, timezone
-from log_queue.log_queue import get_queue
+from config import Config
+from log_queue.log_queue import LogQueueSingleton
 
 
 def parse_log_line(line):
@@ -55,12 +56,12 @@ def collect_logs(file_path):
     Args:
         file_path: Path to the log file
     """
-    queue = get_queue()
+    queue = LogQueueSingleton.get_instance()
     
     try:
         with open(file_path, 'r') as file:
             print(f"Reading logs from: {file_path}")
-            print(f"Sending logs to: in-memory queue")
+            print(f"Sending logs to: redis log queue")
             print("-" * 60)
 
             success_count = 0
@@ -82,15 +83,12 @@ def collect_logs(file_path):
 
             print("-" * 60)
             print(f"Summary: {success_count} logs enqueued, {failure_count} failed")
-            
-            # Print queue stats
-            stats = queue.stats()
-            print(f"Queue size: {stats['current_size']}")
-            print(f"Total enqueued: {stats['total_enqueued']}")
+            print(f"Queue size: {queue.size()}")
                     
     except FileNotFoundError:
         print(f"Error: File '{file_path}' not found.", file=sys.stderr)
         sys.exit(1)
+
     except Exception as e:
         print(f"Error reading file: {e}", file=sys.stderr)
         sys.exit(1)
@@ -98,14 +96,8 @@ def collect_logs(file_path):
 
 def main():
     """Main entry point for the log collector."""
-    if len(sys.argv) != 2:
-        print("Usage: python log_collector.py <log_file_path>")
-        print("Example: python log_collector.py sample_logs.txt")
-        sys.exit(1)
     
-    log_file = sys.argv[1]
-    
-    collect_logs(log_file)
+    collect_logs(Config.LOG_FILE_PATH)
 
 
 if __name__ == "__main__":

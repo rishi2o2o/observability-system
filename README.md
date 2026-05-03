@@ -2,51 +2,18 @@
 
 A simple observability pipeline that demonstrates the collector → queue → processor architecture pattern for log ingestion.
 
+
 ## Project Structure
 
 ```text
 observability-system/
 ├── collector/       # Reads logs and sends to queue
-├── log_queue/       # In-memory queue for buffering
+├── log_queue/       # Redis-based queue for buffering
 ├── processor/       # Consumes from queue and sends to server
 ├── api/             # HTTP log ingestion server
 └── storage/         # Reserved for future storage backends
 ```
 
-## Day 4: Queue-Based Architecture
-
-### Overview
-
-The system now uses an in-memory queue to decouple the collector from the processor. Both components run in the same process but operate independently through the queue:
-
-1. **Collector** reads log files and enqueues structured logs
-2. **Queue** buffers logs in memory (thread-safe)
-3. **Processor** (background thread) dequeues logs and sends them to the HTTP server
-
-Current flow:
-
-```text
-sample_logs.txt → collector → in-memory queue → processor (thread) → HTTP POST /log → server storage
-```
-
-The collector and processor share the same in-memory queue within a single process, with the processor running in a background thread.
-
-### Architecture
-
-```text
-┌─────────────┐      enqueue      ┌─────────────┐      dequeue      ┌─────────────┐
-│   Log       │  ───────────────> │  In-Memory  │  ───────────────> │     Log     │
-│  Collector  │   individual logs │    Queue    │   batches of 10   │  Processor  │
-└─────────────┘                   └─────────────┘                   └─────────────┘
-      │                                  │                                  │
-      │ Reads plain-text                 │ Thread-safe                      │ HTTP POST
-      │ logs from file                   │ buffer                           │ to server
-      ▼                                  ▼                                  ▼
-┌─────────────┐                   ┌─────────────┐                   ┌─────────────┐
-│sample_logs  │                   │  Buffered   │                   │   Log       │
-│   .txt      │                   │    Logs     │                   │   Server    │
-└─────────────┘                   └─────────────┘                   └─────────────┘
-```
 
 ## Components
 
@@ -60,35 +27,21 @@ The collector:
   - `timestamp`
   - `level`
   - `message`
-- Enqueues each structured log to the in-memory queue
+- Enqueues each structured log to the redis-based log queue
 - Reports success/failure for each log
 
-Example structured log:
 
-```json
-{
-  "timestamp": "2026-04-30T14:20:00.000000Z",
-  "level": "INFO",
-  "message": "user login success"
-}
-```
-
-### 2. In-Memory Queue ([`log_queue/log_queue.py`](log_queue/log_queue.py))
+### 2. Redis-Based Log Queue ([`log_queue/log_queue.py`](log_queue/log_queue.py))
 
 The queue:
 
-- Provides thread-safe buffering between collector and processor
+- Uses Redis for persistent, distributed buffering between collector and processor
 - Supports individual and batch enqueue/dequeue operations
-- Tracks statistics (total enqueued, dequeued, current size)
-- Implements blocking dequeue with timeout
-- Can be configured with a maximum size (unlimited by default)
+- Implements blocking dequeue with timeout using Redis BRPOP
+- Allows multiple processes to share the same queue
+- Provides queue size tracking via Redis LLEN
+- Uses a singleton pattern for shared queue access
 
-Key features:
-
-- **Thread-safe**: Uses locks and condition variables
-- **Blocking operations**: Dequeue waits for items if queue is empty
-- **Batch support**: Efficient batch operations for the processor
-- **Statistics**: Tracks throughput and queue health
 
 ### 3. Log Processor ([`processor/log_processor.py`](processor/log_processor.py))
 
@@ -100,12 +53,6 @@ The processor:
 - Handles errors and retries
 - Tracks processing statistics
 
-Processing behavior:
-
-- Waits up to 1 second for the first log in a batch
-- Collects up to 10 logs per batch
-- Sends batch as HTTP POST to server
-- Reports success/failure for each batch
 
 ### 4. Log Server ([`api/log_server.py`](api/log_server.py))
 
@@ -124,6 +71,7 @@ Available endpoints:
 - `POST /logs/clear` - Clear all stored logs
 - `GET /health` - Health check
 
+
 ## Usage
 
 ### 1. Install Dependencies
@@ -138,8 +86,6 @@ pip install -r requirements.txt
 python -m api.log_server
 ```
 
-The server runs at `http://localhost:8080`.
-
 ### 3. Start the Processor
 
 ```bash
@@ -149,16 +95,8 @@ python -m processor.log_processor
 ### 4. Run the Collector
 
 ```bash
-python3 run_system.py collector/sample_logs.txt
+python -m collector.log_collector
 ```
-
-Or with a custom server URL:
-
-```bash
-python3 run_system.py collector/sample_logs.txt http://localhost:8080/log
-```
-
-This starts the processor in a background thread, then runs the collector to enqueue logs.
 
 ### 4. Inspect Collected Logs
 
@@ -167,22 +105,6 @@ curl http://localhost:8080/logs
 curl http://localhost:8080/logs/count
 curl http://localhost:8080/health
 ```
-
-## Testing
-
-Run the integration script:
-
-```bash
-sh test_integration.sh
-```
-
-The script:
-
-1. Starts the server
-2. Runs the unified system (collector + processor)
-3. Checks that 10 logs were stored
-4. Prints all stored logs
-5. Stops the server
 
 ## Questions & Answers
 
