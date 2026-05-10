@@ -96,7 +96,6 @@ def collect_logs(file_path):
 
 def main():
     """Main entry point for the log collector."""
-    
     collect_logs(Config.LOG_FILE_PATH)
 
 
@@ -104,4 +103,4 @@ if __name__ == "__main__":
     main()
 
 
-# Made with Bob
+

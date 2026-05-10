@@ -164,6 +164,5 @@ class LogQueueSingleton:
             )
         return cls._log_queue_instance
 
-# Made with Bob
 
 
